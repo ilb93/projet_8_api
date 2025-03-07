@@ -9,9 +9,20 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 app = Flask(__name__)
 
-# Charger le modèle avec le bon chemin
-MODEL_PATH = "vgg_unet_saved_model.keras"  # Le modèle est dans le même dossier que app.py
-model = tf.keras.models.load_model(MODEL_PATH)
+# Définir le chemin du modèle
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "vgg_unet_saved_model.keras")
+
+# Vérifier si le modèle est bien là
+if not os.path.exists(MODEL_PATH):
+    print(f"❌ Modèle non trouvé : {MODEL_PATH}")
+else:
+    print(f"✅ Modèle trouvé : {MODEL_PATH}")
+
+# Charger le modèle si présent
+if os.path.exists(MODEL_PATH):
+    model = tf.keras.models.load_model(MODEL_PATH)
+else:
+    model = None  # Pour éviter une erreur de chargement
 
 @app.route("/", methods=["GET"])
 def home():
@@ -19,6 +30,9 @@ def home():
 
 @app.route("/predict", methods=["POST"])
 def predict():
+    if model is None:
+        return jsonify({"error": "Modèle introuvable sur le serveur"}), 500
+
     if "file" not in request.files:
         return jsonify({"error": "Aucune image envoyée"}), 400
 
@@ -45,3 +59,4 @@ def predict():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))  # Utilisation du port Heroku
     app.run(host='0.0.0.0', port=port)
+
