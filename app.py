@@ -12,7 +12,7 @@ from PIL import Image
 # ==============================
 
 IMG_HEIGHT = 256
-IMG_WIDTH = 512
+IMG_WIDTH = 256
 
 # Le modèle est LOCAL dans ton repo
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "vgg_unet_saved_model.keras")
