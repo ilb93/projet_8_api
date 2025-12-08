@@ -13,7 +13,7 @@ from PIL import Image
 
 # Taille d'entrée attendue par le modèle (vgg_unet_256_512)
 IMG_HEIGHT = 256
-IMG_WIDTH = 512
+IMG_WIDTH = 256
 
 # Chemin du modèle (adapter l'extension si besoin : .h5 ou .keras)
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model_p8.h5")
