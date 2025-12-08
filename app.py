@@ -17,7 +17,7 @@ IMG_WIDTH = 256
 
 # Nom du fichier modèle dans ton repo
 #   -> adapte l'extension si besoin : "model_p8.h5" ou "model_p8.keras"
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "model_p8.h5")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model_p8.keras")
 
 # Désactiver les logs verbeux de TensorFlow
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
