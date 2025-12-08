@@ -15,7 +15,7 @@ IMG_HEIGHT = 256
 IMG_WIDTH = 256
 
 # Le modèle est LOCAL dans ton repo
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "vgg_unet_saved_model.keras")
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "unet_final_model.h5")
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
