@@ -8,16 +8,23 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image
 import gdown
 
-# =========================================================
-# CONFIG GÉNÉRALE
-# =========================================================
+# =========================================
+# CONFIG
+# =========================================
 
-# Taille attendue par le VGG-UNet
+# Taille d’entrée du modèle (VGG-UNet)
 IMG_HEIGHT = 256
-IMG_WIDTH = 512  # ton modèle a été entraîné en 256x512
+IMG_WIDTH = 512
 
-# Palette Cityscapes simplifiée (8 classes)
-CITYSCAPES_COLORMAP = {
+# ID du fichier sur Google Drive (celui que tu m'as donné avec ?usp=sharing)
+DRIVE_FILE_ID = "1k3wtDmMviqrysyw1dwzpJIUQ5J0Of_yR"
+DRIVE_URL = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
+
+# Chemin local (dans le dyno Heroku)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model_p8.h5")
+
+# Palette “de base” pour quelques classes
+BASE_COLORMAP = {
     0: (0, 0, 0),          # fond
     1: (128, 64, 128),     # route
     2: (244, 35, 232),     # trottoir
@@ -28,49 +35,29 @@ CITYSCAPES_COLORMAP = {
     7: (255, 0, 0),        # voitures
 }
 
-# Réduire le blabla TensorFlow
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
-# ID du fichier sur Google Drive (ton lien partageable)
-MODEL_DRIVE_ID = "1k3wtDmMviqrysyw1dwzpJIUQ5J0Of_yR"
-MODEL_URL = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
-
-# Fichier modèle local (dans le dyno Heroku)
-BASE_DIR = os.path.dirname(__file__)
-MODEL_PATH = os.path.join(BASE_DIR, "model_p8.h5")
 
 app = Flask(__name__)
 
 
-# =========================================================
-# TÉLÉCHARGEMENT DU MODÈLE SI BESOIN
-# =========================================================
+# =========================================
+# TÉLÉCHARGEMENT + CHARGEMENT DU MODÈLE
+# =========================================
 
-def download_model_if_needed() -> None:
-    """
-    Télécharge le modèle depuis Google Drive si le fichier local n'existe pas.
-    Utilise gdown qui gère les gros fichiers et les confirmations Drive.
-    """
+def download_model_if_needed():
+    """Télécharge le modèle depuis Google Drive si le fichier local n'existe pas."""
     if os.path.exists(MODEL_PATH):
         print(f"✅ Modèle déjà présent : {MODEL_PATH}")
         return
 
-    print("⬇️  Téléchargement du modèle depuis Google Drive...")
-    try:
-        gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
-    except Exception as e:
-        print("❌ Erreur pendant le téléchargement du modèle :", e)
-        raise
+    print("📥 Téléchargement du modèle depuis Google Drive...")
+    gdown.download(DRIVE_URL, MODEL_PATH, quiet=False)
 
     if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError("❌ Téléchargement modèle échoué : fichier introuvable.")
+        raise FileNotFoundError("❌ Téléchargement du modèle échoué, fichier introuvable.")
 
 
-# =========================================================
-# CHARGEMENT DU MODÈLE AU DÉMARRAGE
-# =========================================================
-
-print("🚀 Initialisation de l'API de segmentation...")
+print("🚀 Initialisation de l'API...")
 
 download_model_if_needed()
 
@@ -79,27 +66,51 @@ model = tf.keras.models.load_model(MODEL_PATH, compile=False)
 print("✅ Modèle chargé avec succès !")
 
 
-# =========================================================
-# FONCTIONS UTILITAIRES
-# =========================================================
+# =========================================
+# UTILITAIRES
+# =========================================
+
+def build_full_colormap(mask: np.ndarray) -> dict:
+    """
+    À partir du masque d’indices de classes, construit une colormap
+    qui couvre TOUTES les valeurs présentes dans le masque.
+    - Pour les labels 0..7 : on utilise BASE_COLORMAP
+    - Pour les labels au-delà : on génère une couleur déterministe
+      à partir de l’index (pour que ce soit stable).
+    """
+    max_label = int(mask.max())
+    colormap = dict(BASE_COLORMAP)  # copie
+
+    for label in range(max_label + 1):
+        if label in colormap:
+            continue
+        # Couleur pseudo-aléatoire mais déterministe pour ce label
+        rng = np.random.RandomState(label)
+        color = tuple(int(c) for c in rng.randint(0, 256, size=3))
+        colormap[label] = color
+
+    return colormap
+
 
 def apply_colormap(mask: np.ndarray) -> np.ndarray:
     """
-    mask : tableau (H, W) contenant les IDs de classes (0, 1, 2, ...)
-    retourne : image couleur (H, W, 3) en uint8
+    mask : (H, W) avec des entiers de classes
+    -> retourne une image couleur (H, W, 3) en uint8
     """
     h, w = mask.shape
     color_mask = np.zeros((h, w, 3), dtype=np.uint8)
 
-    for label, color in CITYSCAPES_COLORMAP.items():
+    colormap = build_full_colormap(mask)
+
+    for label, color in colormap.items():
         color_mask[mask == label] = color
 
     return color_mask
 
 
-# =========================================================
+# =========================================
 # ROUTES FLASK
-# =========================================================
+# =========================================
 
 @app.route("/", methods=["GET"])
 def home():
@@ -108,7 +119,7 @@ def home():
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    # Vérifier présence du fichier
+    # Vérification de l'image
     if "file" not in request.files:
         return jsonify({"error": "Aucune image envoyée (clé 'file' manquante)"}), 400
 
@@ -121,32 +132,36 @@ def predict():
     if image is None:
         return jsonify({"error": "Format d'image non supporté"}), 400
 
-    # Redimensionnement pour le modèle
+    # Redimensionnement au format du modèle
     image = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))  # (W, H) pour OpenCV
 
-    # Normalisation + ajout dimension batch
+    # Normalisation + batch
     image = image.astype("float32") / 255.0
     image = np.expand_dims(image, axis=0)  # (1, H, W, 3)
 
     # Prédiction
     try:
         preds = model.predict(image)[0]  # (H, W, C) ou (H, W, 1)
+        # Debug léger dans les logs Heroku pour voir la forme
+        print("🔍 preds.shape :", preds.shape)
     except Exception as e:
         return jsonify({"error": f"Erreur interne dans le modèle : {str(e)}"}), 500
 
     # Multi-classes vs binaire
     if len(preds.shape) == 3 and preds.shape[-1] > 1:
+        # (H, W, C) -> argmax
         mask = np.argmax(preds, axis=-1).astype("int32")  # (H, W)
     else:
+        # Cas binaire
         mask = preds
         if len(mask.shape) == 3:
             mask = mask[:, :, 0]
         mask = (mask > 0.5).astype("int32")
 
-    # Application de la colormap
+    # Colorisation
     color_mask = apply_colormap(mask)
 
-    # Conversion en PNG pour la réponse HTTP
+    # Conversion en PNG
     pil_mask = Image.fromarray(color_mask)
     buf = BytesIO()
     pil_mask.save(buf, format="PNG")
@@ -155,9 +170,9 @@ def predict():
     return send_file(buf, mimetype="image/png")
 
 
-# =========================================================
+# =========================================
 # LANCEMENT LOCAL
-# =========================================================
+# =========================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
