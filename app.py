@@ -14,9 +14,10 @@ from PIL import Image
 IMG_HEIGHT = 256
 IMG_WIDTH = 256
 
-# Le modèle est LOCAL dans ton repo
+# On utilise maintenant le modèle .h5
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "unet_final_model.h5")
 
+# Réduire les logs TensorFlow
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 app = Flask(__name__)
@@ -62,25 +63,60 @@ def predict():
     img_norm = img_resized.astype("float32") / 255.0
     img_input = np.expand_dims(img_norm, axis=0)
 
-    # Prédiction
+    # ==============================
+    # PRÉDICTION DU MODÈLE
+    # ==============================
     preds = model.predict(img_input)[0]
 
-    # ========================
-    # BILAIRE ou MULTICLASSE
-    # ========================
+    # ==============================
+    # BINAIRE OU MULTICLASSE
+    # ==============================
+    # Cas multiclasse : shape (H, W, C) avec C > 1 → argmax
     if preds.ndim == 3 and preds.shape[-1] > 1:
-        # multi-classes → on prend argmax
-        mask = np.argmax(preds, axis=-1).astype("uint8")
+        mask = np.argmax(preds, axis=-1).astype("uint8")  # valeurs 0..C-1
+        num_classes = preds.shape[-1]
+        is_multiclass = True
     else:
-        # binaire
+        # Cas binaire : probas → threshold 0.5
         if preds.ndim == 3:
             preds = preds[:, :, 0]
-        mask = (preds > 0.5).astype("uint8")
+        mask = (preds > 0.5).astype("uint8")  # 0 ou 1
+        num_classes = 2
+        is_multiclass = False
 
-    # ========================
-    # EXPORT EN NIVEAUX DE GRIS
-    # ========================
-    mask_img = Image.fromarray((mask * 255).astype("uint8"))
+    # ==============================
+    # COLORISATION DU MASQUE
+    # ==============================
+
+    # Image RGB vide
+    mask_rgb = np.zeros((IMG_HEIGHT, IMG_WIDTH, 3), dtype=np.uint8)
+
+    if is_multiclass:
+        # Petite palette de couleurs (tu peux changer si tu veux d'autres couleurs)
+        palette = [
+            (0, 0, 0),        # classe 0 = fond = noir
+            (0, 255, 0),      # classe 1 = vert
+            (255, 0, 0),      # classe 2 = bleu
+            (0, 0, 255),      # classe 3 = rouge
+            (255, 255, 0),    # classe 4 = cyan
+            (255, 0, 255),    # classe 5 = magenta
+            (255, 255, 255),  # classe 6 = blanc
+        ]
+
+        # On boucle sur chaque classe présente
+        for cls in range(num_classes):
+            color = palette[cls % len(palette)]
+            mask_rgb[mask == cls] = color
+
+    else:
+        # Binaire : fond noir, objet en vert bien visible
+        mask_rgb[mask == 1] = (0, 255, 0)
+
+    # ==============================
+    # EXPORT PNG
+    # ==============================
+
+    mask_img = Image.fromarray(mask_rgb)
     buf = BytesIO()
     mask_img.save(buf, format="PNG")
     buf.seek(0)
@@ -94,4 +130,5 @@ def predict():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    # En local tu peux laisser debug=True, sur Heroku il s'en fiche
     app.run(host="0.0.0.0", port=port, debug=True)
