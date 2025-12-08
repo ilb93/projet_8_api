@@ -13,7 +13,7 @@ from PIL import Image
 
 # Taille d'entrée attendue par le modèle : 256 x 256
 IMG_HEIGHT = 256
-IMG_WIDTH = 256
+IMG_WIDTH = 512
 
 # Nom du fichier modèle dans ton repo
 #   -> adapte l'extension si besoin : "model_p8.h5" ou "model_p8.keras"
