@@ -8,7 +8,6 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image
 import gdown
 
-
 # ==============================
 # CONFIG GÉNÉRALE
 # ==============================
@@ -54,7 +53,7 @@ def download_model_if_needed():
         print(f"✅ Modèle déjà présent : {MODEL_PATH}")
         return
 
-    print("📥 Téléchargement du modèle depuis Google Drive...")
+    print("⬇️  Téléchargement du modèle depuis Google Drive...")
     gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
 
     if not os.path.exists(MODEL_PATH):
@@ -67,47 +66,14 @@ def download_model_if_needed():
 
 print("🚀 Initialisation de l'API...")
 
-download_model_if_needed()
-
-print(f"✅ Chargement du modèle depuis : {MODEL_PATH}")
-model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-print("✅ Modèle chargé avec succès !")
-    except Exception as e:
-        print("❌ Erreur téléchargement modèle :", e)
-        raise e
-
-# ==============================
-# TÉLÉCHARGEMENT DU MODÈLE
-# ==============================
-
-def download_model_if_needed():
-    """
-    Télécharge le modèle depuis Google Drive si le fichier local n'existe pas.
-    Utilise gdown qui gère les gros fichiers et les confirmations Drive.
-    """
-    if os.path.exists(MODEL_PATH):
-        print(f"✅ Modèle déjà présent : {MODEL_PATH}")
-        return
-
-    print("⬇️  Téléchargement du modèle depuis Google Drive...")
-    url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
-    gdown.download(url, MODEL_PATH, quiet=False)
-
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError("❌ Téléchargement du modèle échoué, fichier introuvable.")
-
-
-# ==============================
-# CHARGEMENT DU MODÈLE
-# ==============================
-
-print("🚀 Initialisation de l'API...")
-
-download_model_if_needed()
-
-print(f"✅ Chargement du modèle depuis : {MODEL_PATH}")
-model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-print("✅ Modèle chargé avec succès !")
+try:
+    download_model_if_needed()
+    print(f"✅ Chargement du modèle depuis : {MODEL_PATH}")
+    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    print("✅ Modèle chargé avec succès !")
+except Exception as e:
+    print("❌ Erreur lors du téléchargement/chargement du modèle :", e)
+    model = None  # Optionnel : pour éviter que l'app crashe complètement
 
 
 # ==============================
@@ -139,6 +105,9 @@ def home():
 
 @app.route("/predict", methods=["POST"])
 def predict():
+    if model is None:
+        return jsonify({"error": "Modèle non chargé sur le serveur"}), 500
+
     # Vérification de l'image
     if "file" not in request.files:
         return jsonify({"error": "Aucune image envoyée (clé 'file' manquante)"}), 400
