@@ -6,69 +6,31 @@ import cv2
 import tensorflow as tf
 from flask import Flask, jsonify, request, send_file
 from PIL import Image
-import gdown
-
 
 # ==============================
 # CONFIG GÉNÉRALE
 # ==============================
 
 IMG_HEIGHT = 256
-IMG_WIDTH = 512  # Format attendu par ton modèle
+IMG_WIDTH = 512
 
-# ID DU FICHIER GOOGLE DRIVE (100% correct maintenant)
-MODEL_DRIVE_ID = "1k3wtDmMviqrysyw1dwzpJIUQ5J0Of_yR"
-MODEL_URL = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
-
-# Chemin local (Heroku)
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "model_p8.h5")
+# Le modèle est LOCAL dans ton repo
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "vgg_unet_saved_model.keras")
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 app = Flask(__name__)
 
-
-# ==============================
-# TÉLÉCHARGEMENT DU MODÈLE
-# ==============================
-
-def download_model_if_needed():
-    """Télécharge le modèle depuis Google Drive si absent."""
-    if os.path.exists(MODEL_PATH):
-        print(f"✅ Modèle déjà présent : {MODEL_PATH}")
-        return
-
-    print("⬇️  Téléchargement du modèle depuis Google Drive...")
-    try:
-        gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
-        print("✅ Modèle téléchargé avec succès !")
-    except Exception as e:
-        print("❌ Erreur téléchargement modèle :", e)
-        raise e
-
-
-# ==============================
-# FONCTION SANS COULEURS (grayscale)
-# ==============================
-
-def apply_colormap(mask: np.ndarray) -> np.ndarray:
-    """Retourne le masque brut en niveaux de gris (comme au tout début)."""
-
-    max_val = mask.max() if mask.max() > 0 else 1
-    mask_norm = (mask.astype("float32") / max_val) * 255.0
-    return mask_norm.astype("uint8")
-
-
 # ==============================
 # CHARGEMENT DU MODÈLE
 # ==============================
 
-print("🚀 Initialisation API…")
-download_model_if_needed()
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"❌ Modèle introuvable : {MODEL_PATH}")
 
-print(f"📦 Chargement du modèle : {MODEL_PATH}")
+print(f"📥 Chargement du modèle depuis : {MODEL_PATH}")
 model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-print("✅ Modèle chargé !")
+print("✅ Modèle chargé avec succès !")
 
 
 # ==============================
@@ -77,62 +39,57 @@ print("✅ Modèle chargé !")
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"message": "API opérationnelle"})
+    return jsonify({"message": "API de segmentation opérationnelle"})
 
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    # Vérification
     if "file" not in request.files:
-        return jsonify({"error": "Aucune image envoyée"}), 400
+        return jsonify({"error": "Aucune image reçue"}), 400
 
     file = request.files["file"]
-    image_bytes = file.read()
+    img_bytes = file.read()
 
     # Décodage OpenCV
-    np_img = np.frombuffer(image_bytes, np.uint8)
-    image = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
-    if image is None:
-        return jsonify({"error": "Image invalide"}), 400
+    img_np = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
+
+    if img is None:
+        return jsonify({"error": "Format d'image invalide"}), 400
 
     # Resize au format du modèle
-    image = cv2.resize(image, (IMG_WIDTH, IMG_HEIGHT))
-
-    # Normalisation + batch
-    image = image.astype("float32") / 255.0
-    image = np.expand_dims(image, 0)
+    img_resized = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
+    img_norm = img_resized.astype("float32") / 255.0
+    img_input = np.expand_dims(img_norm, axis=0)
 
     # Prédiction
-    try:
-        preds = model.predict(image)[0]
-    except Exception as e:
-        return jsonify({"error": f"Erreur modèle : {str(e)}"}), 500
+    preds = model.predict(img_input)[0]
 
-    # Traitement du masque selon format
-    if len(preds.shape) == 3 and preds.shape[-1] > 1:
-        # Multi-classes → argmax
-        mask = np.argmax(preds, axis=-1)
+    # ========================
+    # BILAIRE ou MULTICLASSE
+    # ========================
+    if preds.ndim == 3 and preds.shape[-1] > 1:
+        # multi-classes → on prend argmax
+        mask = np.argmax(preds, axis=-1).astype("uint8")
     else:
-        # Binaire
-        mask = preds
-        if len(mask.shape) == 3:
-            mask = mask[:, :, 0]
-        mask = (mask > 0.5).astype("uint8")
+        # binaire
+        if preds.ndim == 3:
+            preds = preds[:, :, 0]
+        mask = (preds > 0.5).astype("uint8")
 
-    # Applique un masque en niveaux de gris
-    gray_mask = apply_colormap(mask)
-
-    # Envoi PNG
-    pil_mask = Image.fromarray(gray_mask)
+    # ========================
+    # EXPORT EN NIVEAUX DE GRIS
+    # ========================
+    mask_img = Image.fromarray((mask * 255).astype("uint8"))
     buf = BytesIO()
-    pil_mask.save(buf, format="PNG")
+    mask_img.save(buf, format="PNG")
     buf.seek(0)
 
     return send_file(buf, mimetype="image/png")
 
 
 # ==============================
-# LANCEMENT LOCAL
+# MODE LOCAL
 # ==============================
 
 if __name__ == "__main__":
