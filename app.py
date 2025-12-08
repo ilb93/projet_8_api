@@ -15,15 +15,14 @@ import gdown
 
 # Taille d’entrée du modèle
 IMG_HEIGHT = 256
-IMG_WIDTH = 512  # ton VGG-UNet a été entraîné en 256x512
+IMG_WIDTH = 512  # VGG-UNet entraîné en 256x512
+
+# ID du fichier Google Drive (modèle .h5)
+DRIVE_FILE_ID = "1k3wtDmMviqrysyw1dwzpJIUQ5J0Of_yR"
+MODEL_URL = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
 
 # Fichier modèle *local* (dans le dyno Heroku)
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model_p8.h5")
-
-# ID du fichier sur Google Drive
-# Lien que tu m’as donné :
-# https://drive.google.com/file/d/1k3wtDmMviqrysyw1dwzpJIUQ5J0Of_yR/view?usp=drive_link
-DRIVE_FILE_ID = "1k3wtDmMviqrysyw1dwzpJIUQ5J0Of_yR"
 
 # Palette Cityscapes simplifiée
 CITYSCAPES_COLORMAP = {
@@ -41,6 +40,41 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 app = Flask(__name__)
 
+
+# ==============================
+# TÉLÉCHARGEMENT DU MODÈLE
+# ==============================
+
+def download_model_if_needed():
+    """
+    Télécharge le modèle depuis Google Drive si le fichier local n'existe pas.
+    Utilise gdown qui gère les gros fichiers et les confirmations Drive.
+    """
+    if os.path.exists(MODEL_PATH):
+        print(f"✅ Modèle déjà présent : {MODEL_PATH}")
+        return
+
+    print("📥 Téléchargement du modèle depuis Google Drive...")
+    gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
+
+    if not os.path.exists(MODEL_PATH):
+        raise FileNotFoundError("❌ Téléchargement du modèle échoué, fichier introuvable.")
+
+
+# ==============================
+# CHARGEMENT DU MODÈLE
+# ==============================
+
+print("🚀 Initialisation de l'API...")
+
+download_model_if_needed()
+
+print(f"✅ Chargement du modèle depuis : {MODEL_PATH}")
+model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+print("✅ Modèle chargé avec succès !")
+    except Exception as e:
+        print("❌ Erreur téléchargement modèle :", e)
+        raise e
 
 # ==============================
 # TÉLÉCHARGEMENT DU MODÈLE
