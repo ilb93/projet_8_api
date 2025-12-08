@@ -8,4 +8,6 @@ h5py==3.12.1
 protobuf==3.19.6
 Pillow==10.3.0
 requests==2.32.5
+gdown==5.2.0
+
 
