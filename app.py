@@ -9,7 +9,7 @@ from io import BytesIO
 app = Flask(__name__)
 
 # 📌 Chargement du modèle
-MODEL_PATH = "model_p8.h5.h5"
+MODEL_PATH = "model_p8.h5"
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"❌ Erreur : Le modèle {MODEL_PATH} est introuvable.")
 model = tf.keras.models.load_model(MODEL_PATH)
