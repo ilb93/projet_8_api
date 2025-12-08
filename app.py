@@ -12,7 +12,7 @@ app = Flask(__name__)
 MODEL_PATH = "model_p8.h5"
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"❌ Erreur : Le modèle {MODEL_PATH} est introuvable.")
-model = tf.keras.models.load_model(MODEL_PATH)
+model = tf.keras.models.load_model(MODEL_PATH, compile=False)
 
 # 📌 Définition du nombre de classes et de la palette de couleurs
 N_CLASSES = 8
