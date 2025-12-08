@@ -1,0 +1,3 @@
+# Ne jamais versionner les modèles lourds
+*.h5
+*.keras
