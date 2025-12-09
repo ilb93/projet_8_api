@@ -1,7 +1,3 @@
-ChatGPT a dit :
-
-Voici exactement ce que tu dois supprimer, ce que tu dois garder, et un README complet prêt à coller, pour que ton GitHub soit propre, professionnel et conforme au Projet 8.
-
 ✅ 1. FICHIERS À SUPPRIMER (inutile / bruit / pas livrable)
 Supprime complètement :
 Fichier / Dossier	Pourquoi le supprimer
