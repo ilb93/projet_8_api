@@ -1,171 +1,178 @@
-✅ 1. FICHIERS À SUPPRIMER (inutile / bruit / pas livrable)
-Supprime complètement :
-Fichier / Dossier	Pourquoi le supprimer
-__pycache__/	Fichiers temporaires Python → jamais versionnés
-temp_results/	Résultats temporaires → inutile en prod
-segmentation_result.png	Exemple de sortie → pas nécessaire dans le repo
-mask_raw.png	Idem, inutile
-mask_colorized.png	Test local → pollue le repo
-.python-version	Spécifique à pyenv, pas demandé dans le projet
-test_api.py	Fichier de debug interne
-Toute image générée automatiquement	À retirer sauf si utile à la doc
+# Projet 8 – API de Segmentation d’images (Cityscapes) – Flask + Heroku + S3
 
-⚠️ Attention : ne supprime PAS :
+Cette API Flask expose un modèle de segmentation sémantique entraîné sur Cityscapes (remapping en **8 classes**) et fournit :
+- une prédiction de masque à partir d’une **image uploadée**,
+- une prédiction à partir d’un **ID d’image** stockée sur **AWS S3**,
+- des endpoints utilitaires pour l’interface Streamlit : liste des IDs, récupération image réelle et GT.
 
-app.py
+> Déploiement cible : **Heroku** (API) + **AWS S3** (modèle + dataset)  
+> Interface de démonstration : **Streamlit Cloud** (consomme l’API)
 
-streamlit_app.py
+---
 
-requirements.txt
+## 1) Fonctionnalités
 
-Procfile
+✅ **Prédiction**
+- `POST /predict` : upload d’une image → retourne le **mask prédit** (PNG)
+- `GET /predict_by_id/<id>` : prédit à partir d’une image Cityscapes sur S3 via son ID → retourne le **mask prédit** (PNG)
 
-unet_final_model.h5
+✅ **Données (S3)**
+- `GET /ids` : liste des IDs disponibles sur S3
+- `GET /image/<id>` : retourne l’image réelle (PNG)
+- `GET /gt/<id>` : retourne le mask GT **colorisé Cityscapes** (PNG)
 
-C'est le cœur du livrable.
+---
 
-✅ 2. FICHIERS À GARDER (obligatoires pour la soutenance)
-À conserver absolument :
-Fichier	Rôle
-app.py	API Flask / FastAPI du Projet 8
-streamlit_app.py	Interface utilisateur
-requirements.txt	Dépendances pour déploiement
-Procfile	Déploiement Heroku
-unet_final_model.h5	Modèle pré-entraîné obligatoire pour l’évaluation
-✅ 3. README COMPLET & PROFESSIONNEL À COLLER DIRECTEMENT DANS GITHUB
+## 2) Classes et format
 
-Voici un README formaté prêt pour GitHub (Markdown).
-Tu as juste à copier-coller dans ton README.md :
+### Remapping (8 classes)
+Le modèle produit des prédictions sur 8 classes remappées :
+`["void", "flat", "construction", "object", "nature", "sky", "human", "vehicle"]`
 
-🧠 Projet 8 – Segmentation d’Images avec VGG-UNet
-API + Interface Streamlit
+### Format de sortie
+- Les routes de prédiction retournent **directement une image PNG** (pas du JSON).
+- Le masque est colorisé avec une palette de visualisation (seed=24) et upscalé à la taille originale de l’image.
 
-Ce dépôt contient l’API de prédiction et l’application Streamlit permettant de tester un modèle de segmentation sémantique entraîné sur le dataset Cityscapes (projet OpenClassrooms – Data Scientist).
+---
 
-🎯 Objectif du projet
+## 3) Structure S3 attendue
 
-Développer un modèle capable de segmenter des scènes urbaines en 8 catégories principales :
+L’API suppose l’organisation suivante dans le bucket (préfixes configurables via variables d’environnement) :
 
-void
+### Images (Cityscapes leftImg8bit)
+leftImg8bit/<city>/<id>_leftImg8bit.png
 
-flat
+markdown
+Copier le code
 
-construction
+### Ground Truth (Cityscapes gtFine)
+L’API renvoie par défaut le GT **colorisé** :
+gtfine/<city>/<id>_gtFine_color.png
 
-object
+yaml
+Copier le code
 
-nature
+> Exemple d’ID : `aachen_000010_000019`  
+> City = `aachen`
 
-sky
+---
 
-human
+## 4) Endpoints
 
-vehicle
+### Healthcheck
+#### `GET /`
+Réponse :
+```json
+{"message":"API de segmentation opérationnelle"}
+Liste des IDs
+GET /ids
+Réponse :
 
-Les 34 classes originales de Cityscapes ont été remappées selon les consignes du projet.
+json
+Copier le code
+{"ids":["aachen_000000_000019","aachen_000001_000019", "..."]}
+Image réelle
+GET /image/<img_id>
+Retour : image/png
 
-La solution finale inclut :
+Exemple :
 
-un modèle VGG-UNet entraîné sur 2 303 images,
+arduino
+Copier le code
+GET /image/aachen_000000_000019
+Mask réel (GT)
+GET /gt/<img_id>
+Retour : image/png (Cityscapes GT color)
 
-une API fournissant la segmentation au format PNG,
+Exemple :
 
-une interface Streamlit permettant d’envoyer une image et d'afficher le masque segmenté.
+bash
+Copier le code
+GET /gt/aachen_000000_000019
+Prédiction par ID
+GET /predict_by_id/<img_id>
+Retour : image/png (mask prédit)
 
-🚀 Architecture du dépôt
-.
-├── app.py                → API Flask pour la segmentation
-├── streamlit_app.py      → Interface utilisateur
-├── requirements.txt      → Dépendances Python
-├── Procfile              → Configuration Heroku
-├── unet_final_model.h5   → Modèle entraîné
-└── README.md             → Documentation
+Exemple :
 
-🧩 Fonctionnement
-1. L’API (app.py)
-
-Elle permet :
-
-de recevoir une image (upload),
-
-de la redimensionner / normaliser,
-
-d’exécuter le modèle VGG-UNet,
-
-de retourner un masque segmenté (8 classes).
-
-Endpoint principal :
-
+bash
+Copier le code
+GET /predict_by_id/aachen_000000_000019
+Prédiction par upload
 POST /predict
+Body : multipart/form-data avec champ file
 
+Retour : image/png (mask prédit)
 
-Entrée : image (.jpg / .png)
-Sortie : masque segmenté colorisé
+Exemple curl :
 
-2. Interface Streamlit (streamlit_app.py)
+bash
+Copier le code
+curl -X POST https://<ton-app>.herokuapp.com/predict \
+  -F "file=@/path/to/image.png" \
+  --output mask.png
+5) Variables d’environnement (Heroku Config Vars)
+Obligatoires
+AWS_REGION (ex: eu-central-1)
 
-Permet à l’utilisateur de :
+S3_BUCKET : bucket contenant le modèle
 
-charger une image locale,
+S3_MODEL_KEY : clé S3 du modèle .h5 (ex: vgg_unet_trained_model.h5)
 
-visualiser l’image originale,
+Données (optionnelles)
+S3_DATA_BUCKET : bucket dataset (si différent de S3_BUCKET)
 
-afficher le masque segmenté,
+S3_LEFT_PREFIX : préfixe images (défaut leftImg8bit/)
 
-lire la légende des 8 classes.
+S3_GT_PREFIX : préfixe GT (défaut gtfine/)
 
-🧠 Modèle utilisé
+6) Installation locale
+Prérequis
+Python 3.10+ recommandé
 
-Architecture : VGG-UNet (Encoder VGG16 + Decoder U-Net)
+Un accès AWS IAM permettant s3:GetObject sur le bucket
 
-Taille d’entrée : 256×512
-
-Fonction de perte : categorical_crossentropy
-
-Métriques : IoU, Dice, Accuracy
-
-Optimiseur : Adam
-
-Entraînement réalisé sur :
-
-2 303 images train
-
-403 images validation
-
-3 epochs (contraintes CPU)
-
-🛠️ Installation
-1. Cloner le projet
-git clone https://github.com/ilb93/projet_8_api.git
-cd projet_8_api
-
-2. Installer les dépendances
+Installation
+bash
+Copier le code
+python -m venv .venv
+source .venv/bin/activate  # (Windows: .venv\Scripts\activate)
 pip install -r requirements.txt
-
-3. Lancer l’API
+Lancer l’API
+bash
+Copier le code
+export AWS_REGION=eu-central-1
+export S3_BUCKET=...
+export S3_MODEL_KEY=...
+export S3_DATA_BUCKET=...
 python app.py
+L’API démarre par défaut sur :
 
-4. Lancer l'application Streamlit
-streamlit run streamlit_app.py
+cpp
+Copier le code
+http://127.0.0.1:5000
+7) Déploiement sur Heroku (résumé)
+Définir les Config Vars (Settings → Config Vars)
 
-🌐 Déploiement Heroku
+Push du code vers le repo connecté à Heroku (ou déploiement GitHub auto)
 
-Le projet inclut :
+Le modèle est téléchargé au boot dans /tmp/model.h5
 
-Procfile
+8) Interface Streamlit (consommation de l’API)
+L’application Streamlit consomme les routes suivantes :
 
-requirements.txt
+/ids → liste IDs
 
-Heroku détecte automatiquement Flask et exécute :
+/image/<id> → image réelle
 
-web: gunicorn app:app
+/gt/<id> → mask GT colorisé
 
-📚 Ressources complémentaires
+/predict_by_id/<id> → mask prédit
 
-Notebook d’entraînement du modèle
+Objectif : démontrer le workflow complet “sélection ID → appel API → affichage résultats”.
 
-Note technique (10 pages)
+9) Notes importantes
+Le GT affiché via /gt/<id> est Cityscapes color (gtFine_color.png) : lisible et conforme pour la visualisation.
 
-Pipeline d’augmentation configuré mais non activé dans l’entraînement final
-
-Explications détaillées sur le remapping Cityscapes
+Les couleurs du mask prédit sont une palette de visualisation (seed=24) et peuvent différer de la palette officielle Cityscapes.
+Cela ne change pas le contenu sémantique, uniquement l’affichage.
