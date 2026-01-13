@@ -207,6 +207,101 @@ def predict():
     buf.seek(0)
     return send_file(buf, mimetype="image/png")
 
+import botocore
+from flask import Response
+
+S3_DATA_BUCKET = os.getenv("S3_DATA_BUCKET", S3_BUCKET)  # même bucket si tu veux
+S3_LEFT_PREFIX = os.getenv("S3_LEFT_PREFIX", "leftImg8bit/")
+S3_GT_PREFIX   = os.getenv("S3_GT_PREFIX", "gtfine/")
+
+s3_data = boto3.client("s3", region_name=AWS_REGION)
+
+def s3_read(key: str) -> bytes:
+    obj = s3_data.get_object(Bucket=S3_DATA_BUCKET, Key=key)
+    return obj["Body"].read()
+
+
+@app.route("/ids", methods=["GET"])
+def ids():
+    """
+    Retourne la liste des IDs disponibles (base commune image/gt).
+    ID format: aachen_000010_000019
+    """
+    paginator = s3_data.get_paginator("list_objects_v2")
+    ids_list = []
+
+    for page in paginator.paginate(Bucket=S3_DATA_BUCKET, Prefix=S3_LEFT_PREFIX):
+        for it in page.get("Contents", []):
+            k = it["Key"]
+            if not k.lower().endswith(".png"):
+                continue
+            filename = k.split("/")[-1]  # ex aachen_000010_000019_leftImg8bit.png
+            if filename.endswith("_leftImg8bit.png"):
+                img_id = filename.replace("_leftImg8bit.png", "")
+                ids_list.append(img_id)
+
+    ids_list = sorted(list(set(ids_list)))
+    return jsonify({"ids": ids_list})
+
+
+@app.route("/image/<img_id>", methods=["GET"])
+def get_image(img_id):
+    # on cherche dans aachen/ (car tu as organisé par ville)
+    # img_id commence déjà par aachen_... donc on sait la ville
+    city = img_id.split("_")[0]
+    key = f"{S3_LEFT_PREFIX}{city}/{img_id}_leftImg8bit.png"
+    try:
+        data = s3_read(key)
+        return Response(data, mimetype="image/png")
+    except botocore.exceptions.ClientError:
+        return jsonify({"error": "Image introuvable"}), 404
+
+
+@app.route("/gt/<img_id>", methods=["GET"])
+def get_gt(img_id):
+    city = img_id.split("_")[0]
+    key = f"{S3_GT_PREFIX}{city}/{img_id}_gtFine_labelIds.png"
+    try:
+        data = s3_read(key)
+        return Response(data, mimetype="image/png")
+    except botocore.exceptions.ClientError:
+        return jsonify({"error": "GT introuvable"}), 404
+
+
+@app.route("/predict_by_id/<img_id>", methods=["GET"])
+def predict_by_id(img_id):
+    city = img_id.split("_")[0]
+    key = f"{S3_LEFT_PREFIX}{city}/{img_id}_leftImg8bit.png"
+
+    try:
+        img_bytes = s3_read(key)
+    except botocore.exceptions.ClientError:
+        return jsonify({"error": "Image introuvable"}), 404
+
+    # decode OpenCV
+    img_np = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
+    if img is None:
+        return jsonify({"error": "Image invalide"}), 400
+
+    # réutilise ton pipeline actuel (celui qui marche)
+    orig_h, orig_w = img.shape[:2]
+
+    x = preprocess_like_notebook(img)
+    preds = model.predict(x, verbose=0)
+    if isinstance(preds, list):
+        preds = preds[0]
+
+    mask = reshape_prediction_like_notebook(preds)
+    mask_rgb = colorize_mask_rgb(mask)
+    mask_rgb_up = cv2.resize(mask_rgb, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+
+    out_pil = Image.fromarray(mask_rgb_up)
+    buf = BytesIO()
+    out_pil.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
