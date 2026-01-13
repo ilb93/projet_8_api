@@ -1,7 +1,7 @@
 import os
 from io import BytesIO
 
-# Mettre AVANT tensorflow (réduit les logs)
+# ⚠️ Avant TensorFlow (réduction logs)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import numpy as np
@@ -11,26 +11,24 @@ from flask import Flask, jsonify, request, send_file
 from PIL import Image
 import boto3
 
+app = Flask(__name__)
+
 # ==============================
-# CONFIG AWS / S3 (Heroku Config Vars)
+# CONFIG S3 / HEROKU
 # ==============================
 AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
 S3_BUCKET = os.getenv("S3_BUCKET")
 S3_MODEL_KEY = os.getenv("S3_MODEL_KEY")  # ex: vgg_unet_trained_model.h5
-
-MODEL_LOCAL_PATH = "/tmp/model.h5"
-
-app = Flask(__name__)
+MODEL_LOCAL_PATH = os.path.join("/tmp", "model.h5")
 
 model = None
-INPUT_H = INPUT_W = None
-OUT_H = OUT_W = None
-OUT_C = None
+MODEL_H = None
+MODEL_W = None
 
 
 def download_model_from_s3():
     if not S3_BUCKET or not S3_MODEL_KEY:
-        raise ValueError("Config Vars manquantes : S3_BUCKET et/ou S3_MODEL_KEY")
+        raise ValueError("Config Vars manquantes : S3_BUCKET et/ou S3_MODEL_KEY (Heroku).")
 
     if os.path.exists(MODEL_LOCAL_PATH) and os.path.getsize(MODEL_LOCAL_PATH) > 0:
         print(f"✅ Modèle déjà présent : {MODEL_LOCAL_PATH}")
@@ -42,70 +40,25 @@ def download_model_from_s3():
     print(f"✅ Modèle téléchargé : {MODEL_LOCAL_PATH} ({os.path.getsize(MODEL_LOCAL_PATH)} bytes)")
 
 
-def infer_shapes_from_model(m):
-    """Déduit input/output du modèle pour éviter les erreurs (256x512, sorties aplaties, etc.)."""
-    global INPUT_H, INPUT_W, OUT_H, OUT_W, OUT_C
+def load_model_on_boot():
+    global model, MODEL_H, MODEL_W
 
-    # input_shape: (None, H, W, 3) ou parfois une liste
-    in_shape = m.input_shape
-    if isinstance(in_shape, list):
-        in_shape = in_shape[0]
-    INPUT_H, INPUT_W = int(in_shape[1]), int(in_shape[2])
-
-    out_shape = m.output_shape
-    if isinstance(out_shape, list):
-        out_shape = out_shape[0]
-
-    # Cas classique segmentation: (None, H, W, C)
-    if len(out_shape) == 4:
-        OUT_H, OUT_W, OUT_C = int(out_shape[1]), int(out_shape[2]), int(out_shape[3])
-    # Cas sortie aplatie: (None, N) ou (None, N, C)
-    elif len(out_shape) == 3:
-        # (None, N, C)
-        n = int(out_shape[1])
-        OUT_C = int(out_shape[2])
-        # On essaye de retrouver (H, W) via l’input (souvent identique)
-        # Si ça ne colle pas, on forcera un reshape via n plus bas.
-        OUT_H, OUT_W = INPUT_H, INPUT_W
-        if OUT_H * OUT_W != n:
-            # fallback : on essaye de déduire un W plausible
-            # (ça couvre ton cas 32768)
-            if n % INPUT_H == 0:
-                OUT_H, OUT_W = INPUT_H, n // INPUT_H
-            elif n % INPUT_W == 0:
-                OUT_W, OUT_H = INPUT_W, n // INPUT_W
-            else:
-                # dernier recours
-                OUT_H, OUT_W = 1, n
-    elif len(out_shape) == 2:
-        # (None, N)
-        n = int(out_shape[1])
-        OUT_C = 1
-        OUT_H, OUT_W = INPUT_H, INPUT_W
-        if OUT_H * OUT_W != n:
-            if n % INPUT_H == 0:
-                OUT_H, OUT_W = INPUT_H, n // INPUT_H
-            elif n % INPUT_W == 0:
-                OUT_W, OUT_H = INPUT_W, n // INPUT_W
-            else:
-                OUT_H, OUT_W = 1, n
-    else:
-        raise ValueError(f"Shape de sortie non gérée : {out_shape}")
-
-    print(f"📐 Model input : {INPUT_H}x{INPUT_W} | output : {OUT_H}x{OUT_W} | C={OUT_C}")
-
-
-def load_model():
-    global model
     download_model_from_s3()
+
     print("🧠 Chargement du modèle Keras...")
     model = tf.keras.models.load_model(MODEL_LOCAL_PATH, compile=False)
     print("✅ Modèle chargé avec succès !")
-    infer_shapes_from_model(model)
+
+    # Récup taille attendue par le modèle
+    # input_shape typique: (None, H, W, 3)
+    input_shape = model.input_shape
+    MODEL_H = int(input_shape[1])
+    MODEL_W = int(input_shape[2])
+    print(f"📐 Input attendu par le modèle : H={MODEL_H}, W={MODEL_W}")
 
 
-# Chargement au boot Heroku
-load_model()
+# Chargement au démarrage dyno
+load_model_on_boot()
 
 
 @app.route("/", methods=["GET"])
@@ -118,54 +71,56 @@ def predict():
     if "file" not in request.files:
         return jsonify({"error": "Aucune image reçue"}), 400
 
-    img_bytes = request.files["file"].read()
+    file = request.files["file"]
+    img_bytes = file.read()
 
+    # Décodage OpenCV
     img_np = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"error": "Format d'image invalide"}), 400
 
-    # Resize selon le modèle (pas en dur)
-    img_resized = cv2.resize(img, (INPUT_W, INPUT_H))
+    # Resize EXACT à la taille attendue par le modèle (ex: 256x512)
+    img_resized = cv2.resize(img, (MODEL_W, MODEL_H), interpolation=cv2.INTER_AREA)
     img_norm = img_resized.astype("float32") / 255.0
     img_input = np.expand_dims(img_norm, axis=0)
 
+    # Prédiction
     preds = model.predict(img_input, verbose=0)[0]
-    print("🔎 preds.shape =", getattr(preds, "shape", None))
 
-    # ====== Remettre preds en (H, W, C) si c’est aplati ======
-    if preds.ndim == 1:
-        # (N,) -> (H,W)
-        preds = preds.reshape((OUT_H, OUT_W))
-    elif preds.ndim == 2:
-        # (N,C) -> (H,W,C)
-        preds = preds.reshape((OUT_H, OUT_W, preds.shape[-1]))
-
-    # ====== Binaire vs Multiclasse ======
-    is_multiclass = (preds.ndim == 3 and preds.shape[-1] > 1)
-
-    if is_multiclass:
+    # ------------------------------
+    # Interprétation sortie
+    # ------------------------------
+    # Cas multiclasse: (H, W, C) avec C>1
+    if preds.ndim == 3 and preds.shape[-1] > 1:
         mask = np.argmax(preds, axis=-1).astype("uint8")
         num_classes = preds.shape[-1]
+        is_multiclass = True
+        out_h, out_w = mask.shape[:2]
     else:
-        if preds.ndim == 3:
+        # Cas binaire: (H, W) ou (H, W, 1)
+        if preds.ndim == 3 and preds.shape[-1] == 1:
             preds = preds[:, :, 0]
+        # IMPORTANT: masque binaire à la taille exacte de sortie
         mask = (preds > 0.5).astype("uint8")
         num_classes = 2
+        is_multiclass = False
+        out_h, out_w = mask.shape[:2]
 
-    # ====== Colorisation ======
-    mask_rgb = np.zeros((OUT_H, OUT_W, 3), dtype=np.uint8)
+    # ------------------------------
+    # Colorisation du masque
+    # ------------------------------
+    mask_rgb = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
     if is_multiclass:
         palette = [
-            (0, 0, 0),
-            (0, 255, 0),
-            (255, 0, 0),
-            (0, 0, 255),
-            (255, 255, 0),
-            (255, 0, 255),
-            (255, 255, 255),
-            (0, 255, 255),
+            (0, 0, 0),        # 0 fond
+            (0, 255, 0),      # 1 vert
+            (255, 0, 0),      # 2 bleu (BGR)
+            (0, 0, 255),      # 3 rouge
+            (255, 255, 0),    # 4 cyan
+            (255, 0, 255),    # 5 magenta
+            (255, 255, 255),  # 6 blanc
         ]
         for cls in range(num_classes):
             mask_rgb[mask == cls] = palette[cls % len(palette)]
@@ -173,10 +128,14 @@ def predict():
         mask_rgb[mask == 1] = (0, 255, 0)
 
     # Export PNG
+    # (OpenCV = BGR. PIL attend RGB. Ici on crée un masque => ça passe, mais on convertit proprement)
+    mask_rgb = cv2.cvtColor(mask_rgb, cv2.COLOR_BGR2RGB)
     mask_img = Image.fromarray(mask_rgb)
+
     buf = BytesIO()
     mask_img.save(buf, format="PNG")
     buf.seek(0)
+
     return send_file(buf, mimetype="image/png")
 
 
