@@ -22,8 +22,14 @@ S3_MODEL_KEY = os.getenv("S3_MODEL_KEY")  # ex: vgg_unet_trained_model.h5
 MODEL_LOCAL_PATH = os.path.join("/tmp", "model.h5")
 
 model = None
-MODEL_H = None
-MODEL_W = None
+MODEL_IN_H = None
+MODEL_IN_W = None
+MODEL_OUT_H = None
+MODEL_OUT_W = None
+MODEL_OUT_C = None
+
+# Moyennes ImageNet "VGG style" en BGR (exactement ce que ton notebook utilise)
+VGG_MEAN_BGR = np.array([103.939, 116.779, 123.68], dtype=np.float32)
 
 
 def download_model_from_s3():
@@ -40,8 +46,27 @@ def download_model_from_s3():
     print(f"✅ Modèle téléchargé : {MODEL_LOCAL_PATH} ({os.path.getsize(MODEL_LOCAL_PATH)} bytes)")
 
 
+def infer_output_shape(m):
+    """
+    Récupère proprement la shape de sortie.
+    Supporte:
+      - sortie unique: (None, H, W, C)
+      - sortie unique: (None, H, W, 1)
+    """
+    out_shape = m.output_shape
+    # Si multiple outputs, on prend le premier
+    if isinstance(out_shape, (list, tuple)) and len(out_shape) > 0 and isinstance(out_shape[0], (list, tuple)):
+        out_shape = out_shape[0]
+
+    # typiquement (None, H, W, C)
+    h = int(out_shape[1])
+    w = int(out_shape[2])
+    c = int(out_shape[3]) if len(out_shape) >= 4 else 1
+    return h, w, c
+
+
 def load_model_on_boot():
-    global model, MODEL_H, MODEL_W
+    global model, MODEL_IN_H, MODEL_IN_W, MODEL_OUT_H, MODEL_OUT_W, MODEL_OUT_C
 
     download_model_from_s3()
 
@@ -49,16 +74,98 @@ def load_model_on_boot():
     model = tf.keras.models.load_model(MODEL_LOCAL_PATH, compile=False)
     print("✅ Modèle chargé avec succès !")
 
-    # Récup taille attendue par le modèle
-    # input_shape typique: (None, H, W, 3)
-    input_shape = model.input_shape
-    MODEL_H = int(input_shape[1])
-    MODEL_W = int(input_shape[2])
-    print(f"📐 Input attendu par le modèle : H={MODEL_H}, W={MODEL_W}")
+    # Input attendu: (None, H, W, 3)
+    in_shape = model.input_shape
+    MODEL_IN_H = int(in_shape[1])
+    MODEL_IN_W = int(in_shape[2])
+    print(f"📐 Input attendu par le modèle : H={MODEL_IN_H}, W={MODEL_IN_W}")
+
+    # Output réel du modèle (souvent plus petit)
+    MODEL_OUT_H, MODEL_OUT_W, MODEL_OUT_C = infer_output_shape(model)
+    print(f"📤 Output du modèle : H={MODEL_OUT_H}, W={MODEL_OUT_W}, C={MODEL_OUT_C}")
 
 
 # Chargement au démarrage dyno
 load_model_on_boot()
+
+
+def preprocess_like_notebook(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Reproduit ton notebook :
+    - image BGR (cv2)
+    - resize à la taille d'entrée du modèle
+    - float32
+    - soustraction des moyennes ImageNet (VGG) en BGR
+    - batch (1, H, W, 3)
+    """
+    img_resized = cv2.resize(img_bgr, (MODEL_IN_W, MODEL_IN_H), interpolation=cv2.INTER_AREA)
+    x = img_resized.astype(np.float32)
+    x -= VGG_MEAN_BGR  # BGR mean subtraction (IMPORTANT)
+    x = np.expand_dims(x, axis=0)
+    return x
+
+
+def decode_image_from_request(file_storage):
+    img_bytes = file_storage.read()
+    img_np = np.frombuffer(img_bytes, np.uint8)
+    img_bgr = cv2.imdecode(img_np, cv2.IMREAD_COLOR)  # BGR
+    return img_bgr
+
+
+def build_palette(num_classes: int):
+    """
+    Palette simple mais robuste : si num_classes > palette, on boucle.
+    Les couleurs sont en BGR (car on remplit via OpenCV-style puis on convertit vers RGB à la fin).
+    """
+    base = [
+        (0, 0, 0),        # 0 background
+        (0, 255, 0),      # 1 green
+        (255, 0, 0),      # 2 blue
+        (0, 0, 255),      # 3 red
+        (255, 255, 0),    # 4 cyan
+        (255, 0, 255),    # 5 magenta
+        (0, 255, 255),    # 6 yellow
+        (255, 255, 255),  # 7 white
+        (80, 80, 80),     # 8 gray
+        (0, 128, 255),    # 9 orange-ish
+    ]
+    return [base[i % len(base)] for i in range(num_classes)]
+
+
+def postprocess_prediction(preds: np.ndarray):
+    """
+    Convertit la sortie modèle en mask uint8 (H_out, W_out).
+    - Multiclasse: argmax sur axis=-1
+    - Binaire: threshold 0.5
+    """
+    # preds typique : (H_out, W_out, C) ou (H_out, W_out, 1) ou (H_out, W_out)
+    if preds.ndim == 3 and preds.shape[-1] > 1:
+        mask = np.argmax(preds, axis=-1).astype(np.uint8)
+        num_classes = int(preds.shape[-1])
+        return mask, num_classes, True
+
+    # binaire
+    if preds.ndim == 3 and preds.shape[-1] == 1:
+        preds = preds[:, :, 0]
+    mask = (preds > 0.5).astype(np.uint8)
+    return mask, 2, False
+
+
+def colorize_mask(mask: np.ndarray, num_classes: int, is_multiclass: bool) -> np.ndarray:
+    """
+    Retourne une image BGR uint8 colorisée de shape (H, W, 3)
+    """
+    h, w = mask.shape[:2]
+    out = np.zeros((h, w, 3), dtype=np.uint8)
+
+    if is_multiclass:
+        palette = build_palette(num_classes)
+        for cls in range(num_classes):
+            out[mask == cls] = palette[cls]
+    else:
+        out[mask == 1] = (0, 255, 0)  # green for foreground
+
+    return out
 
 
 @app.route("/", methods=["GET"])
@@ -72,70 +179,43 @@ def predict():
         return jsonify({"error": "Aucune image reçue"}), 400
 
     file = request.files["file"]
-    img_bytes = file.read()
+    img_bgr = decode_image_from_request(file)
 
-    # Décodage OpenCV
-    img_np = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-    if img is None:
+    if img_bgr is None:
         return jsonify({"error": "Format d'image invalide"}), 400
 
-    # Resize EXACT à la taille attendue par le modèle (ex: 256x512)
-    img_resized = cv2.resize(img, (MODEL_W, MODEL_H), interpolation=cv2.INTER_AREA)
-    img_norm = img_resized.astype("float32") / 255.0
-    img_input = np.expand_dims(img_norm, axis=0)
+    # Taille originale (pour upsample final en nearest)
+    orig_h, orig_w = img_bgr.shape[:2]
+
+    # ✅ Preprocess exactement comme notebook
+    x = preprocess_like_notebook(img_bgr)
 
     # Prédiction
-    preds = model.predict(img_input, verbose=0)[0]
+    preds = model.predict(x, verbose=0)
 
-    # ------------------------------
-    # Interprétation sortie
-    # ------------------------------
-    # Cas multiclasse: (H, W, C) avec C>1
-    if preds.ndim == 3 and preds.shape[-1] > 1:
-        mask = np.argmax(preds, axis=-1).astype("uint8")
-        num_classes = preds.shape[-1]
-        is_multiclass = True
-        out_h, out_w = mask.shape[:2]
-    else:
-        # Cas binaire: (H, W) ou (H, W, 1)
-        if preds.ndim == 3 and preds.shape[-1] == 1:
-            preds = preds[:, :, 0]
-        # IMPORTANT: masque binaire à la taille exacte de sortie
-        mask = (preds > 0.5).astype("uint8")
-        num_classes = 2
-        is_multiclass = False
-        out_h, out_w = mask.shape[:2]
+    # Certains modèles renvoient une liste
+    if isinstance(preds, list):
+        preds = preds[0]
 
-    # ------------------------------
-    # Colorisation du masque
-    # ------------------------------
-    mask_rgb = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    # On enlève batch
+    preds = preds[0]
 
-    if is_multiclass:
-        palette = [
-            (0, 0, 0),        # 0 fond
-            (0, 255, 0),      # 1 vert
-            (255, 0, 0),      # 2 bleu (BGR)
-            (0, 0, 255),      # 3 rouge
-            (255, 255, 0),    # 4 cyan
-            (255, 0, 255),    # 5 magenta
-            (255, 255, 255),  # 6 blanc
-        ]
-        for cls in range(num_classes):
-            mask_rgb[mask == cls] = palette[cls % len(palette)]
-    else:
-        mask_rgb[mask == 1] = (0, 255, 0)
+    # ✅ Mask classes (argmax/threshold)
+    mask, num_classes, is_multiclass = postprocess_prediction(preds)
 
-    # Export PNG
-    # (OpenCV = BGR. PIL attend RGB. Ici on crée un masque => ça passe, mais on convertit proprement)
-    mask_rgb = cv2.cvtColor(mask_rgb, cv2.COLOR_BGR2RGB)
-    mask_img = Image.fromarray(mask_rgb)
+    # ✅ Colorisation à la taille de sortie réelle
+    mask_bgr = colorize_mask(mask, num_classes, is_multiclass)
+
+    # ✅ Upsample (NEAREST) vers la taille originale pour affichage
+    mask_bgr_up = cv2.resize(mask_bgr, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+
+    # Conversion RGB pour PIL
+    mask_rgb_up = cv2.cvtColor(mask_bgr_up, cv2.COLOR_BGR2RGB)
+    mask_img = Image.fromarray(mask_rgb_up)
 
     buf = BytesIO()
     mask_img.save(buf, format="PNG")
     buf.seek(0)
-
     return send_file(buf, mimetype="image/png")
 
 
