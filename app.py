@@ -9,7 +9,6 @@ import cv2
 import tensorflow as tf
 from flask import Flask, jsonify, request, send_file
 from PIL import Image
-
 import boto3
 
 
@@ -17,8 +16,9 @@ import boto3
 # CONFIG GÉNÉRALE
 # ==============================
 
-IMG_HEIGHT = 256
-IMG_WIDTH = 256
+# ⚠️ On ne fixe plus IMG_HEIGHT/IMG_WIDTH ici
+IMG_HEIGHT = None
+IMG_WIDTH = None
 
 # Variables Heroku (Config Vars)
 AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
@@ -39,9 +39,7 @@ model = None  # chargé au démarrage
 
 def download_model_from_s3():
     if not S3_BUCKET or not S3_MODEL_KEY:
-        raise ValueError(
-            "Config Vars manquantes. Vérifie S3_BUCKET et S3_MODEL_KEY dans Heroku."
-        )
+        raise ValueError("Config Vars manquantes : S3_BUCKET et/ou S3_MODEL_KEY.")
 
     # Si déjà téléchargé, on ne retélécharge pas
     if os.path.exists(MODEL_LOCAL_PATH) and os.path.getsize(MODEL_LOCAL_PATH) > 0:
@@ -55,11 +53,19 @@ def download_model_from_s3():
 
 
 def load_model():
-    global model
+    global model, IMG_HEIGHT, IMG_WIDTH
+
     download_model_from_s3()
     print("🧠 Chargement du modèle Keras...")
     model = tf.keras.models.load_model(MODEL_LOCAL_PATH, compile=False)
     print("✅ Modèle chargé avec succès !")
+
+    # ✅ Déduction automatique de la taille d'entrée attendue
+    # input_shape = (None, H, W, C)
+    _, h, w, c = model.input_shape
+    IMG_HEIGHT = int(h)
+    IMG_WIDTH = int(w)
+    print(f"📐 Taille attendue par le modèle : {IMG_HEIGHT}x{IMG_WIDTH}x{c}")
 
 
 # Charger au démarrage (Heroku boot)
@@ -72,7 +78,10 @@ load_model()
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"message": "API de segmentation opérationnelle"})
+    return jsonify({
+        "message": "API de segmentation opérationnelle",
+        "model_input": [IMG_HEIGHT, IMG_WIDTH, 3]
+    })
 
 
 @app.route("/predict", methods=["POST"])
@@ -90,7 +99,7 @@ def predict():
     if img is None:
         return jsonify({"error": "Format d'image invalide"}), 400
 
-    # Resize au format du modèle
+    # ✅ Resize EXACTEMENT au format attendu par le modèle
     img_resized = cv2.resize(img, (IMG_WIDTH, IMG_HEIGHT))
     img_norm = img_resized.astype("float32") / 255.0
     img_input = np.expand_dims(img_norm, axis=0)
